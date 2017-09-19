@@ -85,39 +85,47 @@ class Processor extends BaseProcessor
         $resolveInfo = $this->createResolveInfo($field, $astFields);
         $this->assertClientHasFieldAccess($resolveInfo);
 
-        if ($field instanceof Field) {
-            if ($resolveFunc = $field->getConfig()->getResolveFunction()) {
-                if ($this->isServiceReference($resolveFunc)) {
-                    $service = substr($resolveFunc[0], 1);
-                    $method  = $resolveFunc[1];
-                    if (!$this->executionContext->getContainer()->has($service)) {
-                        throw new ResolveException(sprintf('Resolve service "%s" not found for field "%s"', $service, $field->getName()));
+        try {
+            if ($field instanceof Field) {
+                if ($resolveFunc = $field->getConfig()->getResolveFunction()) {
+                    if ($this->isServiceReference($resolveFunc)) {
+                        $service = substr($resolveFunc[0], 1);
+                        $method = $resolveFunc[1];
+                        if (!$this->executionContext->getContainer()->has($service)) {
+                            throw new ResolveException(sprintf('Resolve service "%s" not found for field "%s"',
+                                $service, $field->getName()));
+                        }
+
+                        $serviceInstance = $this->executionContext->getContainer()->get($service);
+
+                        if (!method_exists($serviceInstance, $method)) {
+                            throw new ResolveException(sprintf('Resolve method "%s" not found in "%s" service for field "%s"',
+                                $method, $service, $field->getName()));
+                        }
+
+                        $result = $serviceInstance->$method($parentValue, $arguments, $resolveInfo);
+                    } else {
+                        $result = $resolveFunc($parentValue, $arguments, $resolveInfo);
                     }
-
-                    $serviceInstance = $this->executionContext->getContainer()->get($service);
-
-                    if (!method_exists($serviceInstance, $method)) {
-                        throw new ResolveException(sprintf('Resolve method "%s" not found in "%s" service for field "%s"', $method, $service, $field->getName()));
-                    }
-
-                    $result = $serviceInstance->$method($parentValue, $arguments, $resolveInfo);
                 } else {
-                    $result = $resolveFunc($parentValue, $arguments, $resolveInfo);
+                    $result = TypeService::getPropertyValue($parentValue, $field->getName());
                 }
-            } else {
-                $result = TypeService::getPropertyValue($parentValue, $field->getName());
-            }
-        } else { //instance of AbstractContainerAwareField
-            if (in_array('Symfony\Component\DependencyInjection\ContainerAwareInterface', class_implements($field))) {
-                /** @var $field ContainerAwareInterface */
-                $field->setContainer($this->executionContext->getContainer()->getSymfonyContainer());
-            }
+            } else { //instance of AbstractContainerAwareField
+                if (in_array('Symfony\Component\DependencyInjection\ContainerAwareInterface',
+                    class_implements($field))) {
+                    /** @var $field ContainerAwareInterface */
+                    $field->setContainer($this->executionContext->getContainer()->getSymfonyContainer());
+                }
 
-            $result = $field->resolve($parentValue, $arguments, $resolveInfo);
+                $result = $field->resolve($parentValue, $arguments, $resolveInfo);
+            }
+        } catch (\Exception $exception) {
+            throw $exception;
+        } finally {
+            $event = new ResolveEvent($field, $astFields);
+            $this->eventDispatcher->dispatch('graphql.post_resolve', $event);
         }
 
-        $event = new ResolveEvent($field, $astFields);
-        $this->eventDispatcher->dispatch('graphql.post_resolve', $event);
         return $result;
     }
 
